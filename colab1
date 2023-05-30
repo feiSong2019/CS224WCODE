@@ -1,0 +1,16 @@
+import networkx as nx #networX manuscrpit: https://networkx.org/documentation/stable/tutorial.html
+
+# creat a graph: nodes can be as a text string, an image, or an XML object or another graph
+G=nx.Graph()
+
+#nodes to graph
+G.add_node(1) #add a node at a time
+G.add_nodes_from([2, 3]) # add node with a list
+G.add_nodes_from([(4, {"color":"red"}),(5,{"color":"green"})])# add node with attribute with (,{})
+H=nx.path_graph(10)
+G.add_nodes_from(H) #add node form other graph
+
+#edge to graph
+G.add_edges_from([(1,2),(1,3)])
+
+
