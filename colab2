@@ -1,0 +1,267 @@
+# The full pipleline for learning node embedding
+# 1. multiple graph statistics for a classic graph named Karate Club Network
+# 2. transform this graph into a Pytorch tensor, then machine learning over this graph
+# 3. finish learning mechine oalgorithm on graph : a node embedding model
+
+#%%
+import networkx as nx
+#import matplotlib as plt
+import torch
+import torch.nn as nn
+import random
+import matplotlib.pyplot as plt 
+from sklearn.decomposition import PCA
+from torch.optim import SGD
+############################part1 function: graph basic####################################
+#function1: compute the average degree of one graph, and round this result
+def average_degree(num_edges, num_nodes):
+    ave_degree=round(2*num_edges/num_nodes)
+    return ave_degree
+
+#function2: compute the average clustering coefficient: https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.approximation.clustering_coefficient.average_clustering.html
+def average_clustering_coefficient(G):
+    ave_clu_coeff=round(nx.average_clustering(G),2)
+    return ave_clu_coeff
+
+#function3: compute the PageRank value for some node: https://www.geeksforgeeks.org/page-rank-algorithm-implementation/
+def one_iter_pagerank(G, beta, r0, node_id):
+    r1=0
+    for ni in nx.neighbors(G, node_id):
+        di=G.degree[ni]
+        r1+=beta*r0/di
+    r1+=(1-beta)*(1/G.number_of_nodes())
+    r1=round(r1,2)
+    return r1
+
+#function4: compute the closeness of some node
+def closeness_centrality(G,node):
+    # compute the shortest path between node with others  
+    node_length_pairs=nx.shortest_path_length(G,source=node)
+    denominator=0
+    for i in range(G.number_of_nodes()):
+        if i!=node:
+            denominator+=node_length_pairs[i]
+    closeness=round(1/denominator,2)
+    return closeness  
+############################part2 function: graph tensor####################################
+#function5: extract edge list
+def graph_to_edge_list(G):
+    edge_list=[]
+    for edge in G.edges():
+        edge_list.append(edge)
+    return edge_list
+
+#function6: transform edge list to tensor
+def edge_list_to_tensor(edge_list):
+    edge_index=torch.tensor([])
+    edge_index=torch.LongTensor(edge_list).t()
+    return edge_index
+
+#function7: sample negative edges
+def sample_negative_edges(G, num_negative_eges):
+    # 1: collect all negative edges
+    # 2: randomly sample edges from negative edge lists
+    neg_edge_list=[]
+    pos_edge_list=graph_to_edge_list(G)
+
+    for node1 in G.nodes():
+        for node2 in G.nodes():
+            if node1>=node2:
+                continue
+            if (node1,node2) in pos_edge_list:
+                continue
+            neg_edge_list.append((node1,node2))
+    neg_edge_list=random.sample(neg_edge_list,num_negative_eges)
+
+    return neg_edge_list
+#%%
+############################part3 function: node embedding####################################
+#function8: define our node embedding
+def create_node_emb(num_node, emb_dim):
+    emb_init=nn.Embedding(num_embeddings=num_node, embedding_dim=emb_dim)
+    shape=emb_init.weight.data.shape
+    emb_init.weight.data=torch.rand(shape)
+    return emb_init
+#function9: visualize the initial node embedding
+def visualize_emb(emb,G):
+    X=emb.weight.data.numpy()
+    pca=PCA(n_components=2)
+    components=pca.fit_transform(X)
+    plt.figure(figsize=(6,6))
+    club1_x=[]
+    club1_y=[]
+    club2_x=[]
+    club2_y=[]
+    for node in G.nodes(data=True):
+        if node[1]['club']=='Mr. Hi':
+            club1_x.append(components[node[0]][0])
+            club1_y.append(components[node[0]][1])
+        else:
+            club2_x.append(components[node[0]][0])
+            club2_y.append(components[node[0]][1])
+    plt.scatter(club1_x, club1_y,color='red',label='Mr.Hi')
+    plt.scatter(club2_x, club2_y,color='blue',label='Officer')
+    plt.legend()
+    plt.show()
+#function10: define the accuracy for prediction
+def accuracy(pred,label):
+    # 1. pred is calssfied into 2 classs with the threshold 0.5
+    # 2. the result accuracy is round 4 decimal
+    accu=torch.sum(torch.round(pred)==label)/pred.shape[0]
+    return accu
+#function11: train the embedding layer
+def train(emb, loss_fn, sigmoid, train_label, train_edge):
+    # 1. get the embedding of nodes in train_edge
+    # 2. dot the embedding between each node pair
+    # 3. feed the dot product result into sigmoid
+    # 4. feed the sigmoid output into loss_fn
+    # 5. print both loss and accuracy of each epoch
+    # (as a sanity check, the loss should decrease during training)
+    epochs=500
+    learning_rate=0.1
+    optimizer=SGD(emb.parameters(),lr=learning_rate,momentum=0.9)
+
+    for i in range(epochs):
+        optimizer.zero_grad()
+        node_emb=emb(train_edge)
+        dot_product=torch.sum(node_emb[0]*node_emb[1],-1)
+        result=sigmoid(dot_product)
+        loss=loss_fn(result,train_label)
+        print('Epoch: ',i, ' Loss: ', loss.item(),
+              'Accuracy: ', accuracy(result, train_label).item())
+        loss.backward()
+        optimizer.step()
+    
+
+
+ 
+
+
+
+#%%
+################################ main function #############################################
+G=nx.karate_club_graph()
+print(type(G))
+
+nx.draw(G, with_labels=True)
+
+############################part1: graph basic####################################
+# compute the average degree
+num_edges=G.number_of_edges()
+num_nodes=G.number_of_nodes()
+ave_degree=average_degree(num_edges, num_nodes)
+print('Average degree of karate club network is {}'.format(ave_degree))
+
+
+# compute the average clustering coefficient
+ave_cluatering_coeff=average_clustering_coefficient(G)
+print('Average clustering coefficient of karate club network is {}'.format(ave_cluatering_coeff))
+
+# determine the PageRank for node0
+beta=0.8
+r0=1/G.number_of_nodes()
+node_id=0
+r1=one_iter_pagerank(G, beta, r0, node_id)
+print('The pagerank value for node 0 after one iteration is {}'.format(r1))
+
+# the closeness centrality for the karate club network node 5
+node=5
+closeness=closeness_centrality(G, node)
+print('The karate club network has closeness centarality {}'.format(closeness))
+
+############################part2: graph tensor####################################
+
+#pytorch basic
+ones=torch.ones(3,4)
+print(ones)
+zeros=torch.zeros(3,4)
+print(zeros)
+random_tensor=torch.rand(3,4)
+print(random_tensor)
+print(ones.shape)
+
+zeros=torch.zeros(3,4,dtype=torch.float32)
+print(zeros.dtype)
+
+zeros=zeros.type(torch.long)
+print(zeros.dtype)
+
+#%%
+#get the list of edge list of the karate club network and transform it into torch.LongTensor
+pos_edge_list=graph_to_edge_list(G)
+pos_edge_index=edge_list_to_tensor(pos_edge_list)
+print('The pos_edge_index tensor has shape {}'.format(pos_edge_index))
+print('The pos_edge_index tensor has sum value {}'.format(torch.sum(pos_edge_index)))
+
+# sample the negativa edge (negative edge: no connection between two nodes)
+negative_edge_list=sample_negative_edges(G, len(pos_edge_index))
+# represent the negative edges
+negative_edge_index=edge_list_to_tensor(negative_edge_list)
+print('The negative edge index has shape{}'.format(negative_edge_index.shape))
+# judege the following edge belong to negative edge or not
+edge_1=(7,1)
+edge_2=(1,33)
+edge_3=(33,22)
+edge_4=(0,4)
+edge_5=(4,2)
+
+for edge in [edge_1, edge_2, edge_3, edge_4, edge_5]:
+    if edge in pos_edge_list:
+        print ('No')
+    else:
+        print ('Yes')
+
+#%%
+############################part3: node embedding####################################
+#Note: use NN.embeding to complete the algorithm
+
+#1. initialize an embedding layer
+# suppose we want to have for 4 items
+# each item is represented with 8 dimensional vector
+emb_sample=nn.Embedding(num_embeddings=4, embedding_dim=8)
+print('Sample embedding layer{}'.format(emb_sample))
+
+#2. select items from the embedding matrix by using the tensor indeices
+id=torch.LongTensor([1])
+print(emb_sample(id))
+# select multiple embeddings
+ids=torch.LongTensor([1,2,3])
+print(emb_sample(ids))
+# get the shape of embedding weight matrix
+shape=emb_sample.weight.data.shape
+print(shape)
+# overwrite the weight to tensor with all ones
+emb_sample.weight.data=torch.ones(shape)
+# check whether the matrix is initlized or not
+ids=torch.LongTensor([1,3])
+print(emb_sample(ids))
+
+# %%
+#3. set the node embedding of our graph ,and it is initlized with uniform distribution
+torch.manual_seed(1)
+emd_like_club=create_node_emb(G.number_of_nodes(), emb_dim=16)
+print('The club embedding layer: {}'.format(emd_like_club))
+print('The nodes 1&3 vectors:{}'.format(emd_like_club(ids)))
+# visual the initial node embedding
+# s1: do PCA to reduce the dimensionality of embedding to 2D sapce
+# s2: visualize each point 
+visualize_emb(emd_like_club,G)
+
+#%%
+# Train the embedding what is the best performance you can get
+# report both the best loss and accuracy on Gradescope
+loss_fn=nn.BCELoss()
+sigmoid=nn.Sigmoid()
+
+# generate the positive and negative labels
+pos_label=torch.ones(pos_edge_index.shape[1],)
+neg_label=torch.zeros(negative_edge_index.shape[1],)
+
+# concat positive and negative labels into one tensor
+train_label=torch.cat([pos_label, neg_label], dim=0)
+
+train_edge=torch.cat([pos_edge_index, negative_edge_index], dim=1)
+train(emd_like_club,loss_fn,sigmoid,train_label,train_edge)
+visualize_emb(emd_like_club, G)
+
+# %%
