@@ -1,0 +1,366 @@
+# aim1: construct the Graph Nerual Network with PyG
+# aim2: apply GNN model to two open data libraly
+# aim3: one task------predict node
+# aim4: another task--predict graph / subgraph
+# %%
+from torch_geometric.datasets import TUDataset
+import torch_geometric.transforms as T
+from ogb.nodeproppred import PygNodePropPredDataset, Evaluator
+import torch
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+import copy
+from torch_geometric.data import DataLoader
+from tqdm.notebook import tqdm
+from ogb.graphproppred.mol_encoder import AtomEncoder
+from torch_geometric.nn import global_add_pool, global_mean_pool
+
+#%%
+# =========part1 function: pytorch Geometric===========
+# function1: obtain the label of graph with index
+def get_graph_class(pyg_dataset, index):
+    this_graph = pyg_dataset[index]
+    label = this_graph.y.item()
+    return label
+
+# function2: obtain the edge number of the graph with index
+
+
+def get_graph_edge_numbers(pyg_dataset, index):
+    this_graph = pyg_dataset[index]
+    edge_numbers = this_graph.edge_index.size()[1]/2
+    num_edges = int(edge_numbers)
+    return edge_numbers
+
+
+# %%
+# =========part1: pytorch Geometric (Datasets and Data)==========================
+# torch_geometric.datasets: contains many common graph datasets
+# torch_geometric.data: provide the data handing of graphs in tensors
+# s1: loading datasets
+root = '/mnt/cloud_disk/sf/'
+name = 'ENZYMES'
+pyg_dataset = TUDataset(root='/mnt/cloud_disk/sf/', name='ENZYMES')
+print(pyg_dataset)
+
+# %%
+# s2: the basic function
+#num_class= get_num_classes(pyg_dataset)
+num_class = pyg_dataset.num_classes
+num_feature = pyg_dataset.num_features
+print('{} dataset has {} classes'.format(name, num_class))
+print('{} dataset has {} features'.format(name, num_feature))
+# %%
+# s3: label of the graph for node with index=100
+index = 100
+label = get_graph_class(pyg_dataset, index)
+print('graph with index {} is labeled with {}'.format(index, label))
+
+# %%
+# s4: edge number of the graph with index=200
+index = 200
+edge_numbers = get_graph_edge_numbers(pyg_dataset, index)
+print('the number of edge for graph with index {} is {}'.format(index, edge_numbers))
+
+# %%
+# ====================part2: Open Graph Benchmark (OGB)===============================
+dataset_name = 'ogbn-arxiv'
+# s5: load dataset and transform it to sparse tensor[while graph is large, we need transform it into sparse tensor to reduce memory]
+dataset = PygNodePropPredDataset(
+    name=dataset_name, transform=T.ToSparseTensor())
+print('The {} dataset has {} graph'.format(dataset_name, len(dataset)))
+print('The number of feature for the above graph with {} node is {}'.format(
+    dataset[0].num_nodes, dataset.num_features))
+
+
+# %%
+# ====================part3: Node Property Prediction=================================
+# s6: transfer the vector into GPU
+data = dataset[0]
+data.adj_t = data.adj_t.to_symmetric()  # make the adjacent matrix
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print('Device:{}'.format(device))
+
+data = data.to(device)
+split_idx = dataset.get_idx_split()
+train_idx = split_idx['train'].to(device)
+# %%
+# s7: implement GCN model
+# Note:
+# 1. You should use torch.nn.ModuleList for self.convs and self.bns
+# 2. self.convs has num_layers GCNConv layers
+# 3. self.bns has num_layers - 1 BatchNorm1d layers
+# 4. You should use torch.nn.LogSoftmax for self.softmax
+# 5. The parameters you can set for GCNConv include 'in_channels' and
+# 'out_channels'. For more information please refer to the documentation:
+# https://pytorch-geometric.readthedocs.io/en/latest/modules/nn.html#torch_geometric.nn.conv.GCNConv
+# 6. The only parameter you need to set for BatchNorm1d is 'num_features'
+# For more information please refer to the documentation:
+# https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm1d.html
+# (~10 lines of code)
+
+#%%
+class GCN(torch.nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, dropout, return_embeds=False):
+        # implement the function that initnalizes self.convs, self.bns, and self.softmax [basic elements]
+        super(GCN, self).__init__()
+
+        # a list of GCNConv layers: each layer used needs to intilized, so use cycle for initlization and stack
+        self.convs = torch.nn.ModuleList()
+        for i in range(num_layers-1):
+            self.convs.append(GCNConv(input_dim, hidden_dim))
+            input_dim = hidden_dim
+        self.convs.append(GCNConv(hidden_dim, output_dim))
+
+        # batch normalization should be located in front of activation function
+        self.bns = torch.nn.ModuleList(
+            [torch.nn.BatchNorm1d(hidden_dim) for i in range(num_layers-1)])
+        self.softmax = torch.nn.LogSoftmax()
+
+        # probability of an element to be zeroed
+        self.dropout = dropout
+
+        # skip classification layer andd return node embeddings
+        self.return_embeds = return_embeds
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for bn in self.bns:
+            bn.reset_parameters()
+
+    def forward(self, x, adj_t):
+        # 1: construct the code as showing in the figure
+        # 2: torch.nn.functional.relu and torch.nn.functional.dropout are useful
+        # 3: Don't forget to set F.dropout training to self.training
+        # 4: If return_embeds is True, then skip the last softmax layer
+        for layerIdex in range(len(self.convs)-1):
+            x=self.convs[layerIdex](x, adj_t)
+            x=self.bns[layerIdex](x)
+            x=F.relu(x)
+            x=F.dropout(x, self.dropout, self.training)
+        out=self.convs[-1](x,adj_t)
+        if not self.return_embeds:
+            out=self.softmax(out)
+        return out
+def train(model, data, train_idx, optimizer, loss_fn):
+    # 1. zero grad the optimizer
+    # 2. feed the data into the model
+    # 3. slicing the model output and label by train_idx
+    # 4. feed the sliced output and label to loss_fn
+  
+
+    optimizer.zero_grad()
+    out=model(data.x, data.adj_t)
+    train_output=out[train_idx]
+    train_label=data.y[train_idx,0]
+    loss=loss_fn(train_output,train_label)
+
+    loss.backward()
+    optimizer.step()
+
+    return loss.item()
+def test(model, data, split_idx, evaluator):
+    out=model(data.x, data.adj_t)
+    y_pred=out.argmax(dim=-1, keepdim=True)
+
+    train_acc=evaluator.eval({
+        'y_true': data.y[split_idx['train']],
+        'y_pred': y_pred[split_idx['train']],
+    })['acc']
+
+    valid_acc=evaluator.eval({
+        'y_true': data.y[split_idx['valid']],
+        'y_pred': y_pred[split_idx['valid']],
+    })['acc']
+
+    test_acc=evaluator.eval({
+        'y_true': data.y[split_idx['test']],
+        'y_pred': y_pred[split_idx['test']],
+    })['acc']
+        
+    return train_acc, valid_acc, test_acc
+
+args={
+    'device': device,
+    'num_layers': 3,
+    'hidden_dim': 256,
+    'dropout': 0.5,
+    'lr': 0.01,
+    'epochs': 100,
+}
+
+# ====================================train process====================================================
+#====overview=====
+# s1: define model as 'class': a. init all optimized parameters and network parameters b. reset parameter c. forward function: build network architecture
+# s2: train function: [one epoch] init optimizer, compute loss, backward loss, update optimizer  
+# s3: train process: [many epochs] & save model
+model=GCN(data.num_features, args['hidden_dim'], dataset.num_classes, args['num_layers'], args['dropout']).to(device)
+
+evaluator=Evaluator(name='ogbn-arxiv')
+
+model.reset_parameters()
+
+loss_fn=F.nll_loss
+
+optimizer=torch.optim.Adam(model.parameters(), lr=args['lr'])
+
+best_valid_acc=0
+best_model=None
+
+for epoch in range (1, 1+args["epochs"]):
+    loss=train(model, data, train_idx, optimizer, loss_fn)
+    result=test(model, data, split_idx, evaluator)
+    train_acc, valid_acc, test_acc = result
+    if valid_acc > best_valid_acc:
+        best_valid_acc=valid_acc
+        best_model=copy.deepcopy(model)
+    print(f'Epoch: {epoch:02d}, '
+    f'Loss: {loss:.4f}, '
+    f'Train: {100 * train_acc: .2f}%, '
+    f'Valid: {100 * valid_acc:.2f}%, '
+    f'Test: {100 * test_acc:.2f}%')
+
+# test process:
+best_result=test(best_model, data, split_idx, evaluator)
+train_acc, valid_acc, test_acc= best_result
+print(f'Best model: '
+    f'Train: {100 * train_acc: .2f}%, '
+    f'Valid: {100 * valid_acc:.2f}%, '
+    f'Test: {100 * test_acc:.2f}%')
+    
+
+
+# %%
+from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
+# s8: Graph Prediction Model: GCN to represent node_embedding and use Global Pooling on nodes to predict properties for the whole graph
+# a: load and preprocess the dataset
+# load the dataset
+dataset=PygGraphPropPredDataset(name='ogbg-molhiv')
+device='cuda' if torch.cuda.is_available() else 'cpu'
+print('Device: {}'.format(device))
+split_idx=dataset.get_idx_split()
+print('Task type: {}'.format(dataset.task_type))
+
+train_loader=DataLoader(dataset[split_idx["train"]], batch_size=32, shuffle=True)
+valid_loader=DataLoader(dataset[split_idx["valid"]], batch_size=32, shuffle=False)
+test_loader=DataLoader(dataset[split_idx["test"]], batch_size=32, shuffle=False)
+
+args={
+    'device': device,
+    'num_layers': 5,
+    'hidden_num': 256,
+    'dropout': 0.5,
+    'lr': 0.001,
+    'epochs': 30,
+}
+
+
+# b: Graph Prediction Model
+class GCN_Graph(torch.nn.Module):
+    def __init__(self, hidden_dim, output_dim, num_layers, dropout):
+        super(GCN_Graph, self).__init__()
+
+        # load encoders for atoms in molecule graphs
+        self.node_encoder=AtomEncoder(hidden_dim)
+
+        # Node embedding model
+        # Note that the input_dim and output_dim are set to hidden_dim
+        self.gnn_node=GCN(hidden_dim,hidden_dim,hidden_dim, num_layers, dropout, return_embeds=True)
+
+        self.pool=global_mean_pool
+
+        self.linear=torch.nn.Linear(hidden_dim, output_dim)
+    def reset_parameters(self):
+        self.gnn_node.reset_parameters()
+        self.linear.reset_parameters()
+    def forward(self, batched_data):
+        x, edge_index, batch= batched_data.x, batched_data.edge_index, batched_data.batch
+        embed=self.node_encoder(x)
+        embed=self.gnn_node(embed, edge_index)
+        features=self.pool(embed, batch)
+        out=self.linear(features)
+        return out
+
+def train(model,device, data_loader, optimizer, loss_fn):
+    for step, batch in enumerate(tqdm(data_loader, desc="Iteration")):
+        bath=batch.to(device)
+
+        if batch.x.shape[0] == 1 or batch.batch[-1] ==0:
+            pass
+        else:
+            is_labeled=batch.y==batch.y
+        
+        optimizer.zero_grad()
+        out=model(batch)
+        loss =loss_fn(out[is_labeled], batch.y[is_labeled].float())
+
+        loss.backward()
+        optimizer.step()
+
+    return loss.item()
+
+def eval(model, device, loader, evaluator):
+    y_true=[]
+    y_pred=[]
+    model.eval()
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+        batch=batch.to(device)
+        if batch.x.shape[0]==1:
+            pass
+        else:
+            with torch.no_grad():
+                pred=model(batch)
+            y_true.append(batch.y.view(pred.shape).detach().cpu())
+            y_pred.append(pred.detach().cpu())
+
+    y_true=torch.cat(y_true, dim=0).numpy()
+    y_pred=torch.cat(y_pred,dim=0).numpy()
+
+    input_dict={"y_true": y_true, "y_pred":y_pred}
+    return evaluator.eval(input_dict)
+
+model=GCN_Graph(args['hidden_num'], dataset.num_tasks,args['num_layers'], args['dropout']).to(device)
+evaluator=Evaluator(name='ogbg-molhiv')
+
+model.reset_parameters()
+
+optimizer=torch.optim.Adam(model.parameters(),lr=args['lr'])
+loss_fn=torch.nn.BCEWithLogitsLoss()
+
+best_model=None
+best_valid_acc=0
+
+for epoch in range(1, 1 + args["epochs"]):
+    print('Training...')
+    loss=train(model, device, train_loader, optimizer, loss_fn)
+
+    print('Evaluating...')
+    train_result=eval(model, device, train_loader, evaluator)
+    val_result=eval(model, device, valid_loader, evaluator)
+    test_result=eval(model, device, test_loader, evaluator)
+
+    train_acc, valid_acc, test_acc=train_result[dataset.eval_metric], val_result[dataset.eval_metric],test_result[dataset.eval_metric]
+    if valid_acc > best_valid_acc:
+        best_valid_acc=valid_acc
+        best_model=copy.deepcopy(model)
+    print(f'Epoch: {epoch:02d}, '
+    f'Loss: {loss:.4f}, '
+    f'Train: {100 * train_acc: .2f}%, '
+    f'Valid: {100 * valid_acc:.2f}%, '
+    f'Test: {100 * test_acc:.2f}%')
+
+# test process:
+best_result=test(best_model, data, split_idx, evaluator)
+train_acc, valid_acc, test_acc= best_result
+print(f'Best model: '
+    f'Train: {100 * train_acc: .2f}%, '
+    f'Valid: {100 * valid_acc:.2f}%, '
+    f'Test: {100 * test_acc:.2f}%')   
+
+
+
+
+
+
+# %%
